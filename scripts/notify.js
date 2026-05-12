@@ -63,12 +63,14 @@ function build20FAttachments(data) {
 function format10F(data) {
   if (!data?.meals?.length) return '_오늘 메뉴 정보 없음_'
 
-  const emoji = { '도시락': '🍱', '브런치': '☕', '샐러드': '🥗' }
+  const emoji = { '도시락': '🍱', '브런치': '🥪', '샐러드': '🥗' }
+  const label = { '브런치': '샌드위치' }
 
   return data.meals.map(meal => {
     const e = emoji[meal.courseName] ?? '🍴'
+    const name = label[meal.courseName] ?? meal.courseName
     const items = meal.items?.join(' · ') ?? meal.name
-    return `${e} **${meal.courseName}**: ${items}`
+    return `${e} **${name}**: ${items}`
   }).join('\n')
 }
 
@@ -97,7 +99,7 @@ async function main() {
   console.log(`20층: ${data20f ? '데이터 있음' : '없음'}, 10층: ${data10f ? '데이터 있음' : '없음'}`)
 
   const payload = {
-    text: `### 🍽️ 오늘의 SSAFY 점심 식단\n📅 **${formatDateKo(dateStr)}**`,
+    text: `### 🍽️ 오늘의 싸밥\n📅 **${formatDateKo(dateStr)}**`,
     attachments: [
       ...build20FAttachments(data20f),
       {
