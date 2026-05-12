@@ -26,17 +26,38 @@ async function fetchJson(url) {
 
 // ── 메시지 포맷 ────────────────────────────────────────────────────────────
 
-function format20F(data) {
-  if (!data?.meals?.length) return '_오늘 메뉴 정보 없음_'
+function build20FAttachments(data) {
+  if (!data?.meals?.length) {
+    return [{ color: '#0060a9', title: '🏢 20층 삼성웰스토리', text: '_오늘 메뉴 정보 없음_' }]
+  }
 
   const courseEmoji = { '한식': '🍚', '양식': '🍝', '일식': '🍱', '중식': '🥢', '분식': '🥘' }
 
   return data.meals.map(meal => {
     const course = meal.courseName ?? ''
     const emoji = Object.entries(courseEmoji).find(([k]) => course.includes(k))?.[1] ?? '🍴'
-    const desc = meal.setName ? meal.setName.replace(/&/g, ' · ') : meal.name
-    return `${emoji} **[${course}]** ${desc}`
-  }).join('\n')
+
+    // 메인 메뉴 + 전체 반찬 목록
+    const mainItem = meal.nutrition?.find(n => n.isMain)
+    const sides = meal.nutrition?.filter(n => !n.isMain) ?? []
+
+    let text = ''
+    if (mainItem) {
+      text += `**${mainItem.name}**`
+      if (sides.length) text += `\n${sides.map(n => n.name).join(' · ')}`
+    } else {
+      // nutrition 없으면 setName 폴백
+      text = meal.setName ? meal.setName.replace(/&/g, ' · ') : meal.name
+    }
+
+    return {
+      color: '#0060a9',
+      title: `${emoji} 20층 삼성웰스토리 | ${course}`,
+      text,
+      ...(meal.photoUrl ? { image_url: meal.photoUrl } : {}),
+      footer: 'Samsung Welstory',
+    }
+  })
 }
 
 function format10F(data) {
@@ -75,18 +96,10 @@ async function main() {
 
   console.log(`20층: ${data20f ? '데이터 있음' : '없음'}, 10층: ${data10f ? '데이터 있음' : '없음'}`)
 
-  const photoUrl = data20f?.meals?.find(m => m.photoUrl)?.photoUrl ?? null
-
   const payload = {
     text: `### 🍽️ 오늘의 SSAFY 점심 식단\n📅 **${formatDateKo(dateStr)}**`,
     attachments: [
-      {
-        color: '#0060a9',
-        title: '🏢 20층 삼성웰스토리',
-        text: format20F(data20f),
-        ...(photoUrl ? { image_url: photoUrl } : {}),
-        footer: 'Samsung Welstory',
-      },
+      ...build20FAttachments(data20f),
       {
         color: '#d87b00',
         title: '🏢 10층 공존식단',
