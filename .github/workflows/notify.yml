@@ -1,0 +1,30 @@
+name: 식단 알림 발송
+
+on:
+  schedule:
+    # 평일 오전 08:20 KST = UTC 전날 23:20 (일~목)
+    - cron: '20 23 * * 0-4'
+  workflow_dispatch:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 레포 체크아웃 (10층 데이터 포함)
+        uses: actions/checkout@v4
+
+      - name: Node.js 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 의존성 설치
+        run: npm install
+
+      - name: 식단 알림 발송
+        env:
+          WELSTORY_USERNAME: ${{ secrets.WELSTORY_USERNAME }}
+          WELSTORY_PASSWORD: ${{ secrets.WELSTORY_PASSWORD }}
+          MM_WEBHOOK_URL: ${{ secrets.MM_WEBHOOK_URL }}
+        run: node scripts/notify.js

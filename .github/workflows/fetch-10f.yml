@@ -1,0 +1,44 @@
+name: 10층 주간 식단 파싱
+
+on:
+  schedule:
+    # 매주 월요일 07:50 KST = UTC 일요일 22:50
+    - cron: '50 22 * * 0'
+  workflow_dispatch:
+
+jobs:
+  fetch-10f:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 레포 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node.js 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 의존성 설치
+        run: npm install
+
+      - name: 10층 이미지 다운로드 및 파싱
+        env:
+          MM_LOGIN_JSON: ${{ secrets.MM_LOGIN_JSON }}
+          # 채널 ID를 직접 아는 경우: MM_MENU_CHANNEL_ID 만 설정
+          # 팀명/채널명으로 자동 조회: MM_MENU_TEAM_NAME + MM_MENU_CHANNEL_NAME 설정
+          MM_MENU_CHANNEL_ID: ${{ secrets.MM_MENU_CHANNEL_ID }}
+          MM_MENU_TEAM_NAME: ${{ secrets.MM_MENU_TEAM_NAME }}
+          MM_MENU_CHANNEL_NAME: ${{ secrets.MM_MENU_CHANNEL_NAME }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: node scripts/fetch-10f.js
+
+      - name: 파싱 결과 커밋 및 푸시
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add data-10f/
+          git diff --staged --quiet && echo "변경사항 없음" || (
+            git commit -m "10층 주간 식단 업데이트 $(TZ=Asia/Seoul date +'%Y-%m-%d')"
+            git push
+          )
