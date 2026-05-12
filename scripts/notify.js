@@ -1,10 +1,8 @@
 'use strict'
 
-const { WelstoryClient } = require('welstory-api-wrapper')
-const fs = require('fs')
-const path = require('path')
+const BASE = 'https://raw.githubusercontent.com/C4T4767/baptimessafy/main'
 
-// ── 날짜 유틸 ──────────────────────────────────────────────────────────────
+// ── 날짜 ──────────────────────────────────────────────────────────────────
 
 function getKSTDateStr() {
   const kst = new Date(Date.now() + 9 * 60 * 60 * 1000)
@@ -18,53 +16,34 @@ function formatDateKo(dateStr) {
   return `${y}년 ${String(m).padStart(2, '0')}월 ${String(d).padStart(2, '0')}일 (${days[dow]})`
 }
 
-// ── 20층 Welstory ──────────────────────────────────────────────────────────
+// ── 데이터 fetch ───────────────────────────────────────────────────────────
 
-async function fetch20F(dateStr) {
-  const client = new WelstoryClient()
-  await client.login({
-    username: process.env.WELSTORY_USERNAME,
-    password: process.env.WELSTORY_PASSWORD,
-  })
-
-  const restaurants = await client.searchRestaurant('멀티캠퍼스')
-  if (!restaurants.length) throw new Error('멀티캠퍼스 식당을 찾을 수 없습니다')
-
-  const restaurant = restaurants[0]
-  if (!(await restaurant.checkIsRegistered())) await restaurant.register()
-
-  const mealTimes = await restaurant.listMealTimes()
-  const lunch = mealTimes.find(m => m.name.includes('중식')) ?? mealTimes[1]
-
-  const dateNum = parseInt(dateStr.replace(/-/g, ''), 10)
-  return restaurant.listMeal(dateNum, lunch.id)
+async function fetchJson(url) {
+  const res = await fetch(url)
+  if (!res.ok) return null
+  return res.json()
 }
 
-function format20FText(meals) {
-  if (!meals.length) return '_오늘 메뉴 정보 없음_'
+// ── 메시지 포맷 ────────────────────────────────────────────────────────────
+
+function format20F(data) {
+  if (!data?.meals?.length) return '_오늘 메뉴 정보 없음_'
 
   const courseEmoji = { '한식': '🍚', '양식': '🍝', '일식': '🍱', '중식': '🥢', '분식': '🥘' }
 
-  return meals.map(meal => {
-    const course = meal.menuCourseName ?? ''
+  return data.meals.map(meal => {
+    const course = meal.courseName ?? ''
     const emoji = Object.entries(courseEmoji).find(([k]) => course.includes(k))?.[1] ?? '🍴'
-    const setDesc = meal.setName ? meal.setName.replace(/&/g, ' · ') : meal.name
-    return `${emoji} **[${course}]** ${setDesc}`
+    const desc = meal.setName ? meal.setName.replace(/&/g, ' · ') : meal.name
+    return `${emoji} **[${course}]** ${desc}`
   }).join('\n')
 }
 
-// ── 10층 공존식단 ──────────────────────────────────────────────────────────
-
-function read10F(dateStr) {
-  const fp = path.join(__dirname, '..', 'data-10f', `${dateStr}.json`)
-  if (!fs.existsSync(fp)) return null
-  return JSON.parse(fs.readFileSync(fp, 'utf-8'))
-}
-
-function format10FText(data) {
-  if (!data?.meals?.length) return '_주간 식단표 미게시 또는 데이터 준비 중_'
+function format10F(data) {
+  if (!data?.meals?.length) return '_오늘 메뉴 정보 없음_'
 
   const emoji = { '도시락': '🍱', '브런치': '☕', '샐러드': '🥗' }
+
   return data.meals.map(meal => {
     const e = emoji[meal.courseName] ?? '🍴'
     const items = meal.items?.join(' · ') ?? meal.name
@@ -72,7 +51,7 @@ function format10FText(data) {
   }).join('\n')
 }
 
-// ── Mattermost 웹훅 ────────────────────────────────────────────────────────
+// ── 웹훅 발송 ──────────────────────────────────────────────────────────────
 
 async function sendWebhook(payload) {
   const res = await fetch(process.env.MM_WEBHOOK_URL, {
@@ -87,41 +66,31 @@ async function sendWebhook(payload) {
 
 async function main() {
   const dateStr = getKSTDateStr()
-  const dateKo = formatDateKo(dateStr)
   console.log(`[${dateStr}] 식단 알림 발송 시작`)
 
-  // 20층 fetch
-  let meals20f = []
-  let err20f = null
-  try {
-    meals20f = await fetch20F(dateStr)
-    console.log(`20층: ${meals20f.length}개 코스 조회 완료`)
-  } catch (e) {
-    err20f = e.message
-    console.error('20층 조회 실패:', e.message)
-  }
+  const [data20f, data10f] = await Promise.all([
+    fetchJson(`${BASE}/data/${dateStr}.json`),
+    fetchJson(`${BASE}/data-10f/${dateStr}.json`),
+  ])
 
-  // 10층 read
-  const data10f = read10F(dateStr)
-  console.log(`10층: ${data10f ? '데이터 있음' : '데이터 없음'}`)
+  console.log(`20층: ${data20f ? '데이터 있음' : '없음'}, 10층: ${data10f ? '데이터 있음' : '없음'}`)
 
-  // 20층 대표 사진 (첫 번째 코스 photoUrl 사용)
-  const photoUrl = meals20f.find(m => m.photoUrl)?.photoUrl ?? null
+  const photoUrl = data20f?.meals?.find(m => m.photoUrl)?.photoUrl ?? null
 
   const payload = {
-    text: `### 🍽️ 오늘의 SSAFY 점심 식단\n📅 **${dateKo}**`,
+    text: `### 🍽️ 오늘의 SSAFY 점심 식단\n📅 **${formatDateKo(dateStr)}**`,
     attachments: [
       {
         color: '#0060a9',
         title: '🏢 20층 삼성웰스토리',
-        text: err20f ? `_조회 실패: ${err20f}_` : format20FText(meals20f),
+        text: format20F(data20f),
         ...(photoUrl ? { image_url: photoUrl } : {}),
         footer: 'Samsung Welstory',
       },
       {
         color: '#d87b00',
         title: '🏢 10층 공존식단',
-        text: format10FText(data10f),
+        text: format10F(data10f),
       },
     ],
   }
