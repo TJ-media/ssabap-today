@@ -1,10 +1,7 @@
 name: 10층 주간 식단 파싱
 
 on:
-  schedule:
-    # 매주 월요일 07:50 KST = UTC 일요일 22:50
-    - cron: '50 22 * * 0'
-  workflow_dispatch:
+  workflow_dispatch:  # 이미지 올린 후 수동으로 실행
 
 jobs:
   fetch-10f:
@@ -25,6 +22,7 @@ jobs:
       - name: 10층 이미지 다운로드 및 파싱
         env:
           MM_LOGIN_JSON: ${{ secrets.MM_LOGIN_JSON }}
+          MM_MENU_CHANNEL_ID: ${{ secrets.MM_MENU_CHANNEL_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: node scripts/fetch-10f.js
 

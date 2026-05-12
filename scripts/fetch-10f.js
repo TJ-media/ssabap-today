@@ -5,8 +5,6 @@ const fs = require('fs')
 const path = require('path')
 
 const MM_SERVER = 'https://meeting.ssafy.com'
-// 10층 식단표가 매주 올라오는 고정 스레드
-const MENU_THREAD_POST_ID = '1k43iwapofrtbe3a7d66ed9izo'
 
 // ── Mattermost API ─────────────────────────────────────────────────────────
 
@@ -23,32 +21,36 @@ async function mmLogin() {
   return token
 }
 
-async function findLatest10FImageInThread(token) {
-  const url =
-    `${MM_SERVER}/api/v4/posts/${MENU_THREAD_POST_ID}/thread` +
-    `?skipFetchThreads=false&collapsedThreads=false&direction=down&perPage=60`
-
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
-  if (!res.ok) throw new Error(`스레드 조회 실패: HTTP ${res.status}`)
+async function findLatestMenuImage(token, channelId) {
+  const res = await fetch(
+    `${MM_SERVER}/api/v4/channels/${channelId}/posts?per_page=50`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  )
+  if (!res.ok) throw new Error(`채널 포스트 조회 실패: HTTP ${res.status}`)
   const data = await res.json()
 
-  // "식단표 공유" 메시지 + 10층 PNG 첨부 포스트를 최신순으로 탐색
-  const candidates = Object.values(data.posts)
-    .filter(post => post.message?.includes('식단표 공유'))
-    .filter(post => post.metadata?.files?.length > 0)
-    .sort((a, b) => b.create_at - a.create_at)
+  for (const postId of data.order) {
+    const post = data.posts[postId]
+    if (!post.file_ids?.length) continue
 
-  for (const post of candidates) {
-    const file = post.metadata.files.find(
-      f => f.name?.includes('10층') && f.mime_type === 'image/png'
-    )
-    if (file) {
-      console.log(`식단 이미지 발견: ${file.name} (포스트 ${post.id})`)
-      return file.id
+    for (const fileId of post.file_ids) {
+      const infoRes = await fetch(`${MM_SERVER}/api/v4/files/${fileId}/info`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!infoRes.ok) continue
+      const info = await infoRes.json()
+
+      const isPng =
+        info.mime_type === 'image/png' ||
+        info.name?.toLowerCase().endsWith('.png')
+
+      if (isPng) {
+        console.log(`이미지 발견: ${info.name} (${fileId})`)
+        return fileId
+      }
     }
   }
-
-  throw new Error('스레드에서 10층 식단 이미지를 찾을 수 없습니다')
+  throw new Error('채널에서 PNG 이미지를 찾을 수 없습니다')
 }
 
 async function downloadImage(token, fileId) {
@@ -138,11 +140,14 @@ function saveDailyJsons(parsed) {
 // ── 메인 ──────────────────────────────────────────────────────────────────
 
 async function main() {
+  const channelId = process.env.MM_MENU_CHANNEL_ID
+  if (!channelId) throw new Error('MM_MENU_CHANNEL_ID 환경변수가 필요합니다')
+
   console.log('Mattermost 로그인 중...')
   const token = await mmLogin()
 
   console.log('10층 식단 이미지 검색 중...')
-  const fileId = await findLatest10FImageInThread(token)
+  const fileId = await findLatestMenuImage(token, channelId)
 
   console.log('이미지 다운로드 중...')
   const imageBuffer = await downloadImage(token, fileId)
