@@ -5,6 +5,8 @@ const fs = require('fs')
 const path = require('path')
 
 const MM_SERVER = 'https://meeting.ssafy.com'
+// 10층 식단표가 매주 올라오는 고정 스레드
+const MENU_THREAD_POST_ID = '1k43iwapofrtbe3a7d66ed9izo'
 
 // ── Mattermost API ─────────────────────────────────────────────────────────
 
@@ -21,50 +23,32 @@ async function mmLogin() {
   return token
 }
 
-async function getChannelIdByName(token, teamName, channelName) {
-  const res = await fetch(
-    `${MM_SERVER}/api/v4/teams/name/${teamName}/channels/name/${channelName}`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  )
-  if (!res.ok) throw new Error(`채널 조회 실패: HTTP ${res.status}`)
-  const data = await res.json()
-  return data.id
-}
+async function findLatest10FImageInThread(token) {
+  const url =
+    `${MM_SERVER}/api/v4/posts/${MENU_THREAD_POST_ID}/thread` +
+    `?skipFetchThreads=false&collapsedThreads=false&direction=down&perPage=60`
 
-async function findMenuImageFileId(token, channelId) {
-  // 최근 50개 포스트에서 10층 식단 PNG 탐색
-  const res = await fetch(
-    `${MM_SERVER}/api/v4/channels/${channelId}/posts?per_page=50`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  )
-  if (!res.ok) throw new Error(`채널 포스트 조회 실패: HTTP ${res.status}`)
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+  if (!res.ok) throw new Error(`스레드 조회 실패: HTTP ${res.status}`)
   const data = await res.json()
 
-  for (const postId of data.order) {
-    const post = data.posts[postId]
-    if (!post.file_ids?.length) continue
+  // "식단표 공유" 메시지 + 10층 PNG 첨부 포스트를 최신순으로 탐색
+  const candidates = Object.values(data.posts)
+    .filter(post => post.message?.includes('식단표 공유'))
+    .filter(post => post.metadata?.files?.length > 0)
+    .sort((a, b) => b.create_at - a.create_at)
 
-    for (const fileId of post.file_ids) {
-      const infoRes = await fetch(`${MM_SERVER}/api/v4/files/${fileId}/info`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      if (!infoRes.ok) continue
-      const info = await infoRes.json()
-
-      const isPng = info.mime_type === 'image/png' || info.name?.toLowerCase().endsWith('.png')
-      const isMenu =
-        info.name?.includes('식단') ||
-        info.name?.includes('10층') ||
-        info.name?.includes('10F') ||
-        info.name?.includes('10f')
-
-      if (isPng && isMenu) {
-        console.log(`식단 이미지 발견: ${info.name} (${fileId})`)
-        return fileId
-      }
+  for (const post of candidates) {
+    const file = post.metadata.files.find(
+      f => f.name?.includes('10층') && f.mime_type === 'image/png'
+    )
+    if (file) {
+      console.log(`식단 이미지 발견: ${file.name} (포스트 ${post.id})`)
+      return file.id
     }
   }
-  throw new Error('채널에서 10층 식단 이미지를 찾을 수 없습니다')
+
+  throw new Error('스레드에서 10층 식단 이미지를 찾을 수 없습니다')
 }
 
 async function downloadImage(token, fileId) {
@@ -123,20 +107,17 @@ function saveDailyJsons(parsed) {
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true })
 
   for (const day of parsed.days) {
-    const [dayMonth, dayOfMonth] = day.date.split('.').map(Number)
-    const year = parsed.year
-    // 연월이 명시적이지 않을 경우 parsed.month 사용
-    const month = dayMonth || parsed.month
-    const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(dayOfMonth).padStart(2, '0')}`
+    const parts = day.date.split('.').map(Number)
+    const month = parts[0] || parsed.month
+    const dayOfMonth = parts[1]
+    const dateStr = `${parsed.year}-${String(month).padStart(2, '0')}-${String(dayOfMonth).padStart(2, '0')}`
 
     const meals = Object.entries(day.meals)
       .filter(([, items]) => items.length > 0)
       .map(([courseName, items]) => ({
         courseName,
         setName: '10층 공존식단',
-        items: items
-          .map(i => i.replace(/^[&＆]\s*/, '').trim())
-          .filter(Boolean),
+        items: items.map(i => i.replace(/^[&＆]\s*/, '').trim()).filter(Boolean),
       }))
 
     const output = {
@@ -157,28 +138,11 @@ function saveDailyJsons(parsed) {
 // ── 메인 ──────────────────────────────────────────────────────────────────
 
 async function main() {
-  // 채널 정보: MM_MENU_CHANNEL_ID 직접 지정 또는 팀/채널명으로 조회
-  const channelId = process.env.MM_MENU_CHANNEL_ID
-  const teamName = process.env.MM_MENU_TEAM_NAME    // 예: s15public
-  const channelName = process.env.MM_MENU_CHANNEL_NAME  // 예: 식단채널명
-
   console.log('Mattermost 로그인 중...')
   const token = await mmLogin()
 
-  let resolvedChannelId = channelId
-  if (!resolvedChannelId) {
-    if (!teamName || !channelName) {
-      throw new Error(
-        'MM_MENU_CHANNEL_ID 또는 (MM_MENU_TEAM_NAME + MM_MENU_CHANNEL_NAME) 이 필요합니다'
-      )
-    }
-    console.log(`채널 ID 조회 중: ${teamName}/${channelName}`)
-    resolvedChannelId = await getChannelIdByName(token, teamName, channelName)
-    console.log(`채널 ID: ${resolvedChannelId}`)
-  }
-
   console.log('10층 식단 이미지 검색 중...')
-  const fileId = await findMenuImageFileId(token, resolvedChannelId)
+  const fileId = await findLatest10FImageInThread(token)
 
   console.log('이미지 다운로드 중...')
   const imageBuffer = await downloadImage(token, fileId)

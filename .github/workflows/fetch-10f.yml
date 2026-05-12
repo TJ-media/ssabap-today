@@ -25,11 +25,6 @@ jobs:
       - name: 10층 이미지 다운로드 및 파싱
         env:
           MM_LOGIN_JSON: ${{ secrets.MM_LOGIN_JSON }}
-          # 채널 ID를 직접 아는 경우: MM_MENU_CHANNEL_ID 만 설정
-          # 팀명/채널명으로 자동 조회: MM_MENU_TEAM_NAME + MM_MENU_CHANNEL_NAME 설정
-          MM_MENU_CHANNEL_ID: ${{ secrets.MM_MENU_CHANNEL_ID }}
-          MM_MENU_TEAM_NAME: ${{ secrets.MM_MENU_TEAM_NAME }}
-          MM_MENU_CHANNEL_NAME: ${{ secrets.MM_MENU_CHANNEL_NAME }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: node scripts/fetch-10f.js
 
