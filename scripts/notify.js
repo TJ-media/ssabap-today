@@ -98,6 +98,11 @@ async function main() {
 
   console.log(`20층: ${data20f ? '데이터 있음' : '없음'}, 10층: ${data10f ? '데이터 있음' : '없음'}`)
 
+  if (!data20f?.meals?.length && !data10f?.meals?.length) {
+    console.log('두 층 모두 메뉴 없음 → 공휴일/휴무로 간주, 알림 건너뜀')
+    return
+  }
+
   const payload = {
     text: `### 🍽️ 오늘의 싸밥\n📅 **${formatDateKo(dateStr)}**`,
     attachments: [
