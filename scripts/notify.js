@@ -1,5 +1,8 @@
 'use strict'
 
+const fs = require('fs')
+const path = require('path')
+
 const BASE = 'https://raw.githubusercontent.com/C4T4767/baptimessafy/main'
 
 // ── 날짜 ──────────────────────────────────────────────────────────────────
@@ -22,6 +25,16 @@ async function fetchJson(url) {
   const res = await fetch(url)
   if (!res.ok) return null
   return res.json()
+}
+
+// 10층은 이 레포의 data-10f에서 직접 읽고, 없으면 baptimessafy로 폴백
+async function read10F(dateStr) {
+  const local = path.join(__dirname, '..', 'data-10f', `${dateStr}.json`)
+  try {
+    return JSON.parse(fs.readFileSync(local, 'utf-8'))
+  } catch {
+    return fetchJson(`${BASE}/data-10f/${dateStr}.json`)
+  }
 }
 
 // ── 메시지 포맷 ────────────────────────────────────────────────────────────
@@ -93,7 +106,7 @@ async function main() {
 
   const [data20f, data10f] = await Promise.all([
     fetchJson(`${BASE}/data/${dateStr}.json`),
-    fetchJson(`${BASE}/data-10f/${dateStr}.json`),
+    read10F(dateStr),
   ])
 
   console.log(`20층: ${data20f ? '데이터 있음' : '없음'}, 10층: ${data10f ? '데이터 있음' : '없음'}`)
