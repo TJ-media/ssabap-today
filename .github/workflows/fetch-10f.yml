@@ -6,6 +6,9 @@ on:
     - cron: '0 21 * * 0-4'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   fetch-10f:
     runs-on: ubuntu-latest
