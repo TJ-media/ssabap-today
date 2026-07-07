@@ -1,0 +1,17 @@
+{
+  "date": "2026-07-06",
+  "dayOfWeek": "월요일",
+  "restaurant": "멀티캠퍼스 10층",
+  "mealTime": "점심",
+  "meals": [
+    {
+      "name": "미 운영",
+      "courseName": "도시락",
+      "setName": "10층 공존식단",
+      "items": [
+        "미 운영"
+      ]
+    }
+  ],
+  "updatedAt": "2026-07-07T04:01:45.939Z"
+}
