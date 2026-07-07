@@ -11,6 +11,30 @@ const MENU_THREAD_POST_ID = '1k43iwapofrtbe3a7d66ed9izo'
 const DATA_DIR = path.join(__dirname, '..', 'data-10f')
 const LAST_PARSED_FILE = path.join(DATA_DIR, '.last-parsed.json')
 
+function getKSTDateStr() {
+  const kst = new Date(Date.now() + 9 * 60 * 60 * 1000)
+  return kst.toISOString().slice(0, 10)
+}
+
+// 오늘자 식단을 확보하지 못했을 때 관리자 웹훅으로 경고 발송
+async function sendAlert(text) {
+  const url = process.env.MM_ALERT_WEBHOOK_URL
+  if (!url) {
+    console.warn(`MM_ALERT_WEBHOOK_URL 미설정, 경고 스킵: ${text}`)
+    return
+  }
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: `⚠️ **[ssabap-today] 10층 식단 수집 경고**\n${text}` }),
+    })
+    if (!res.ok) console.warn(`경고 웹훅 발송 실패: HTTP ${res.status}`)
+  } catch (e) {
+    console.warn(`경고 웹훅 발송 실패: ${e.message}`)
+  }
+}
+
 // ── Mattermost API ─────────────────────────────────────────────────────────
 
 async function mmApi(token, apiPath) {
@@ -276,7 +300,7 @@ async function main() {
 
   const last = readLastParsed()
   if (last?.fileId === image.fileId) {
-    console.log(`이미 파싱한 식단표입니다 (${image.fileName}). 종료.`)
+    console.log(`이미 파싱한 식단표입니다 (${image.fileName}).`)
     return
   }
 
@@ -297,4 +321,22 @@ async function main() {
   console.log(`✓ 완료! ${saved.length}일치 식단 저장`)
 }
 
-main().catch(e => { console.error(e.message ?? e); process.exit(1) })
+// 실행 후 오늘자(KST) 식단이 없으면 경고 웹훅 발송
+async function checkTodayCovered() {
+  const today = getKSTDateStr()
+  if (fs.existsSync(path.join(DATA_DIR, `${today}.json`))) return
+  console.warn(`오늘(${today}) 식단 데이터 없음 → 경고 발송`)
+  await sendAlert(
+    `오늘(${today})의 10층 식단 데이터가 없습니다.\n` +
+    `이번 주 식단표가 아직 채널에 올라오지 않았거나, 수집에 실패했을 수 있어요.\n` +
+    `채널을 확인해 주세요: https://meeting.ssafy.com`
+  )
+}
+
+main()
+  .then(checkTodayCovered)
+  .catch(async e => {
+    console.error(e.message ?? e)
+    await sendAlert(`수집 실행 자체가 실패했습니다:\n\`\`\`\n${e.message ?? e}\n\`\`\``)
+    process.exit(1)
+  })

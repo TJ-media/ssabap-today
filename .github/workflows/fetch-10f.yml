@@ -28,6 +28,7 @@ jobs:
           MM_LOGIN_JSON: ${{ secrets.MM_LOGIN_JSON }}
           MM_MENU_CHANNEL_ID: ${{ secrets.MM_MENU_CHANNEL_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          MM_ALERT_WEBHOOK_URL: ${{ secrets.MM_ALERT_WEBHOOK_URL }}
         run: node scripts/fetch-10f.js
 
       - name: 파싱 결과 커밋 및 푸시
