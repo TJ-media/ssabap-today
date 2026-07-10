@@ -89,13 +89,29 @@ function format10F(data) {
 
 // ── 웹훅 발송 ──────────────────────────────────────────────────────────────
 
+// MM_WEBHOOK_URL에 쉼표로 구분된 여러 URL을 넣으면 전부 발송
 async function sendWebhook(payload) {
-  const res = await fetch(process.env.MM_WEBHOOK_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  if (!res.ok) throw new Error(`웹훅 발송 실패: HTTP ${res.status}`)
+  const urls = (process.env.MM_WEBHOOK_URL ?? '')
+    .split(',')
+    .map(u => u.trim())
+    .filter(Boolean)
+  if (!urls.length) throw new Error('MM_WEBHOOK_URL이 비어 있습니다')
+
+  const failures = []
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      console.log(`✓ 발송: ...${url.slice(-8)}`)
+    } catch (e) {
+      failures.push(`...${url.slice(-8)}: ${e.message}`)
+    }
+  }
+  if (failures.length) throw new Error(`웹훅 발송 실패 → ${failures.join(', ')}`)
 }
 
 // ── 메인 ──────────────────────────────────────────────────────────────────
