@@ -176,11 +176,33 @@ function writeLastParsed(record) {
 
 // ── Gemini 파싱 ────────────────────────────────────────────────────────────
 
-async function parseWithGemini(imageBuffer) {
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
+// 과부하(503)·레이트리밋(429) 같은 일시적 실패는 재시도, 인증/요청 오류는 즉시 중단
+const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504])
+const FATAL_STATUS = new Set([400, 401, 403])
+// 한 모델이 계속 과부하면 다음 모델로 폴백 (쉼표 구분으로 재정의 가능)
+const GEMINI_MODELS = (process.env.GEMINI_MODELS ?? 'gemini-2.5-flash,gemini-2.5-pro')
+  .split(',')
+  .map(m => m.trim())
+  .filter(Boolean)
+const MAX_ATTEMPTS = 4
 
-  const prompt = `이 이미지는 멀티캠퍼스 10층 식당의 주간 식단표입니다.
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+
+// SDK가 status를 채우지 않는 경우도 있어 메시지의 "[503 ...]" 패턴까지 확인
+function errStatus(e) {
+  if (Number.isInteger(e?.status)) return e.status
+  const m = String(e?.message ?? '').match(/\[(\d{3})\s/)
+  return m ? Number(m[1]) : null
+}
+
+// 응답이 JSON이 아니거나 검증에 걸린 경우도 비결정적이라 재시도할 가치가 있음
+function retryableError(message) {
+  const e = new Error(message)
+  e.retryable = true
+  return e
+}
+
+const PROMPT = `이 이미지는 멀티캠퍼스 10층 식당의 주간 식단표입니다.
 
 각 요일(월~금)의 식단을 아래 JSON 형식으로 정리해주세요.
 날짜는 이미지에 표시된 숫자 그대로 사용하세요 (예: "5.12").
@@ -205,23 +227,70 @@ async function parseWithGemini(imageBuffer) {
 메뉴 이름은 이미지에 표시된 그대로 정확하게 적어주세요.
 JSON만 출력하고 다른 설명은 하지 마세요.`
 
+async function callGemini(modelName, imageBuffer) {
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
+  const model = genAI.getGenerativeModel({ model: modelName })
+
   const result = await model.generateContent([
-    prompt,
+    PROMPT,
     { inlineData: { data: imageBuffer.toString('base64'), mimeType: 'image/png' } },
   ])
 
   const text = result.response.text()
   const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) ?? text.match(/\{[\s\S]*\}/)
-  if (!jsonMatch) throw new Error('Gemini 응답에서 JSON 추출 실패')
+  if (!jsonMatch) throw retryableError('Gemini 응답에서 JSON 추출 실패')
 
-  const parsed = JSON.parse(jsonMatch[1] ?? jsonMatch[0])
+  let parsed
+  try {
+    parsed = JSON.parse(jsonMatch[1] ?? jsonMatch[0])
+  } catch (e) {
+    throw retryableError(`Gemini 응답 JSON 파싱 실패: ${e.message}`)
+  }
 
   if (!Number.isInteger(parsed.year) || parsed.year < 2020 || parsed.year > 2100) {
-    throw new Error(`비정상 연도 파싱됨: ${parsed.year}`)
+    throw retryableError(`비정상 연도 파싱됨: ${parsed.year}`)
   }
-  if (!parsed.days?.length) throw new Error('파싱된 식단이 없습니다')
+  if (!parsed.days?.length) throw retryableError('파싱된 식단이 없습니다')
 
   return parsed
+}
+
+async function parseWithGemini(imageBuffer) {
+  const failures = []
+
+  for (const modelName of GEMINI_MODELS) {
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const parsed = await callGemini(modelName, imageBuffer)
+        console.log(`✓ ${modelName} 파싱 성공 (${attempt}회차)`)
+        return parsed
+      } catch (e) {
+        const status = errStatus(e)
+        const label = `${modelName} ${attempt}/${MAX_ATTEMPTS}`
+        failures.push(`${label}: ${e.message}`)
+
+        // 잘못된 키·권한 문제는 재시도도 폴백도 무의미
+        if (status !== null && FATAL_STATUS.has(status)) {
+          console.error(`${label} 실패(재시도 불가): ${e.message}`)
+          throw e
+        }
+        // 재시도 대상이 아니면(예: 없는 모델 404) 바로 다음 모델로
+        const canRetry = e.retryable === true || (status !== null && RETRYABLE_STATUS.has(status))
+        if (!canRetry || attempt === MAX_ATTEMPTS) {
+          console.warn(`${label} 실패: ${e.message} → 다음 모델로 폴백`)
+          break
+        }
+        const wait = 5000 * 2 ** (attempt - 1) + Math.floor(Math.random() * 1000)
+        console.warn(`${label} 실패: ${e.message} → ${wait}ms 후 재시도`)
+        await sleep(wait)
+      }
+    }
+  }
+
+  throw new Error(
+    `Gemini 파싱 실패 (모델 ${GEMINI_MODELS.length}개, 모델당 최대 ${MAX_ATTEMPTS}회 시도)\n` +
+    failures.map(f => `  - ${f}`).join('\n')
+  )
 }
 
 // ── JSON 저장 ──────────────────────────────────────────────────────────────
