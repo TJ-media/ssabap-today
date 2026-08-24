@@ -26,6 +26,10 @@ jobs:
       - name: 10층 식단표 수집 및 파싱
         env:
           MM_LOGIN_JSON: ${{ secrets.MM_LOGIN_JSON }}
+          # 기본 수집 채널은 스크립트에 박혀 있음 (s15p20a5 / town-square).
+          # 채널이 바뀌면 리포지토리 Variables로 코드 수정 없이 덮어쓸 수 있다.
+          MM_MENU_TEAM_NAME: ${{ vars.MM_MENU_TEAM_NAME }}
+          MM_MENU_CHANNEL_NAME: ${{ vars.MM_MENU_CHANNEL_NAME }}
           MM_MENU_CHANNEL_ID: ${{ secrets.MM_MENU_CHANNEL_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           MM_ALERT_WEBHOOK_URL: ${{ secrets.MM_ALERT_WEBHOOK_URL }}

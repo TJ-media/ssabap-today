@@ -5,8 +5,18 @@ const fs = require('fs')
 const path = require('path')
 
 const MM_SERVER = 'https://meeting.ssafy.com'
-// 10층 식단표가 매주 올라오는 스레드의 루트 포스트 (채널 ID 추적용)
+// 10층 식단표가 매주 올라오는 채널 (팀/채널 이름은 채널 URL에서 그대로 따옴)
+// https://meeting.ssafy.com/s15p20a5/channels/town-square
+const MENU_TEAM_NAME = process.env.MM_MENU_TEAM_NAME || 's15p20a5'
+const MENU_CHANNEL_NAME = process.env.MM_MENU_CHANNEL_NAME || 'town-square'
+const MENU_CHANNEL_URL = `${MM_SERVER}/${MENU_TEAM_NAME}/channels/${MENU_CHANNEL_NAME}`
+// 예전에 식단표가 올라오던 스레드의 루트 포스트 (이름 조회가 안 될 때만 쓰는 폴백)
 const MENU_THREAD_POST_ID = '1k43iwapofrtbe3a7d66ed9izo'
+
+// town-square처럼 글이 많은 채널에서도 이번 주 식단표에 닿도록 여러 페이지를 훑는다
+const POSTS_PER_PAGE = 200
+const MAX_POST_PAGES = Number(process.env.MM_MENU_MAX_PAGES ?? 5)
+const MAX_POST_AGE_DAYS = Number(process.env.MM_MENU_MAX_POST_AGE_DAYS ?? 28)
 
 const DATA_DIR = path.join(__dirname, '..', 'data-10f')
 const LAST_PARSED_FILE = path.join(DATA_DIR, '.last-parsed.json')
@@ -62,24 +72,46 @@ async function mmLogin() {
   return token
 }
 
-async function resolveMenuChannelId(token) {
-  // 시크릿으로 채널을 직접 지정하면 스레드 조회 없이 사용
-  if (process.env.MM_MENU_CHANNEL_ID) return process.env.MM_MENU_CHANNEL_ID
-
+// 채널 URL의 팀/채널 이름으로 채널 ID를 조회 (기본 경로)
+async function resolveChannelIdByName(token) {
+  if (!MENU_TEAM_NAME || !MENU_CHANNEL_NAME) return null
+  const apiPath = `/teams/name/${encodeURIComponent(MENU_TEAM_NAME)}` +
+    `/channels/name/${encodeURIComponent(MENU_CHANNEL_NAME)}`
   try {
-    const res = await mmApi(token, `/posts/${MENU_THREAD_POST_ID}`)
-    const post = await res.json()
-    return post.channel_id
+    const channel = await (await mmApi(token, apiPath)).json()
+    console.log(`식단표 채널 확인: ${MENU_CHANNEL_URL} → ${channel.id}`)
+    return channel.id
   } catch (e) {
-    if (e.status === 403) {
-      console.warn('식단표 스레드 접근 403 (채널 미가입) → 가입 채널 검색으로 폴백합니다.')
-      return null
-    }
-    throw e
+    console.warn(
+      `채널 이름 조회 실패 (${MENU_TEAM_NAME}/${MENU_CHANNEL_NAME}): ${e.message}\n` +
+      `→ 이 MM 계정이 해당 팀에 속해 있는지 확인하세요: ${MENU_CHANNEL_URL}`
+    )
+    return null
   }
 }
 
-// 포스트 첨부에서 10층 식단표 PNG를 찾음
+// 예전 식단표 스레드에서 채널 ID를 역추적 (이름 조회가 실패했을 때만)
+async function resolveChannelIdByThread(token) {
+  try {
+    const post = await (await mmApi(token, `/posts/${MENU_THREAD_POST_ID}`)).json()
+    return post.channel_id
+  } catch (e) {
+    console.warn(`식단표 스레드 조회 실패: ${e.message}`)
+    return null
+  }
+}
+
+// 파일명이 "멀티캠퍼스(10층)_공존식단_26년_8월_2주차.png" 형태라 이름만으로 충분히 구분된다
+const MENU_FILE_NAME_RE = /10\s*층|공존\s*식단/
+
+function is10FMenuFile(info) {
+  const name = info.name ?? ''
+  const isImage =
+    (info.mime_type ?? '').startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(name)
+  return isImage && MENU_FILE_NAME_RE.test(name)
+}
+
+// 포스트 첨부에서 10층 식단표 이미지를 찾음
 async function pick10FFile(token, post) {
   if (!post.file_ids?.length) return null
   for (const fileId of post.file_ids) {
@@ -89,35 +121,53 @@ async function pick10FFile(token, post) {
     } catch {
       continue
     }
-    const isPng =
-      info.mime_type === 'image/png' || info.name?.toLowerCase().endsWith('.png')
-    if (isPng && info.name?.includes('10층')) {
-      return { fileId, fileName: info.name }
-    }
+    if (is10FMenuFile(info)) return { fileId, fileName: info.name }
   }
   return null
 }
 
-// 채널 최신 포스트부터 탐색 (스레드 API의 perPage=60 앞쪽 고정 문제 회피)
+// 채널 최신 포스트부터 탐색.
+// 본문 문구('식단표 공유')는 채널마다 달라 조건에서 뺐고, 첨부 파일명으로만 판별한다.
 async function findLatest10FImage(token, channelId) {
-  const res = await mmApi(token, `/channels/${channelId}/posts?per_page=100`)
-  const data = await res.json()
+  const cutoff = Date.now() - MAX_POST_AGE_DAYS * 24 * 60 * 60 * 1000
 
-  // order는 최신순 정렬
-  for (const postId of data.order) {
-    const post = data.posts[postId]
-    if (!post.message?.includes('식단표 공유')) continue
-    const file = await pick10FFile(token, post)
-    if (file) {
-      console.log(`식단 이미지 발견: ${file.fileName} (${file.fileId})`)
-      return file
+  for (let page = 0; page < MAX_POST_PAGES; page++) {
+    let data
+    try {
+      const res = await mmApi(
+        token,
+        `/channels/${channelId}/posts?per_page=${POSTS_PER_PAGE}&page=${page}`
+      )
+      data = await res.json()
+    } catch (e) {
+      console.warn(`채널 ${channelId} 포스트 조회 실패(page ${page}): ${e.message}`)
+      return null
     }
+
+    // order는 최신순 정렬
+    const order = data.order ?? []
+    if (!order.length) return null
+
+    for (const postId of order) {
+      const post = data.posts?.[postId]
+      if (!post) continue
+      // 너무 오래된 글까지 내려가면 지난 주차 식단표를 잡을 수 있어 여기서 끊는다
+      if (post.create_at < cutoff) return null
+      const file = await pick10FFile(token, post)
+      if (file) {
+        console.log(`식단 이미지 발견: ${file.fileName} (${file.fileId})`)
+        return file
+      }
+    }
+
+    if (order.length < POSTS_PER_PAGE) return null
   }
 
+  console.warn(`채널 ${channelId}: 최근 ${MAX_POST_PAGES}페이지에서 식단표를 찾지 못했습니다.`)
   return null
 }
 
-// 가입한 모든 팀/채널에서 "식단표 공유" 포스트를 검색 (채널 미가입 403 폴백)
+// 가입한 모든 팀/채널에서 식단표 포스트를 검색 (지정 채널에서 못 찾았을 때의 최후 폴백)
 async function searchLatest10FImage(token) {
   const teams = await (await mmApi(token, '/users/me/teams')).json()
   const candidates = []
@@ -128,7 +178,7 @@ async function searchLatest10FImage(token) {
       const res = await fetch(`${MM_SERVER}/api/v4/teams/${team.id}/posts/search`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ terms: '"식단표 공유"', is_or_search: false }),
+        body: JSON.stringify({ terms: '식단표 공존식단', is_or_search: true }),
       })
       if (!res.ok) continue
       data = await res.json()
@@ -148,7 +198,10 @@ async function searchLatest10FImage(token) {
     const file = await pick10FFile(token, post)
     if (file) {
       console.log(`식단 이미지 발견(검색): ${file.fileName}, 채널 ${post.channel_id}`)
-      console.log(`→ 다음부터 스레드 조회를 건너뛰려면 MM_MENU_CHANNEL_ID=${post.channel_id} 시크릿을 설정하세요.`)
+      console.log(
+        `→ 지정 채널(${MENU_CHANNEL_URL})이 아닌 곳에서 찾았습니다. ` +
+        `이 채널로 고정하려면 MM_MENU_CHANNEL_ID=${post.channel_id} 시크릿을 설정하세요.`
+      )
       return file
     }
   }
@@ -349,12 +402,27 @@ async function main() {
   console.log('Mattermost 로그인 중...')
   const token = await mmLogin()
 
-  const channelId = await resolveMenuChannelId(token)
+  // 채널 URL로 지정한 곳 → MM_MENU_CHANNEL_ID 오버라이드 → 옛 스레드 순으로 시도
+  const channelIds = []
+  const addChannel = id => {
+    if (id && !channelIds.includes(id)) channelIds.push(id)
+  }
+  addChannel(await resolveChannelIdByName(token))
+  addChannel(process.env.MM_MENU_CHANNEL_ID)
 
   let image = null
-  if (channelId) {
-    console.log(`식단표 채널: ${channelId}`)
+  for (const channelId of channelIds) {
+    console.log(`식단표 채널 탐색: ${channelId}`)
     image = await findLatest10FImage(token, channelId)
+    if (image) break
+  }
+
+  if (!image) {
+    const threadChannelId = await resolveChannelIdByThread(token)
+    if (threadChannelId && !channelIds.includes(threadChannelId)) {
+      console.log(`옛 식단표 스레드 채널 탐색: ${threadChannelId}`)
+      image = await findLatest10FImage(token, threadChannelId)
+    }
   }
   if (!image) {
     console.log('가입 채널 전체에서 식단표 검색 중...')
@@ -362,7 +430,7 @@ async function main() {
   }
   if (!image) {
     throw new Error(
-      '10층 식단표를 찾지 못했습니다. 이 MM 계정이 식단표가 올라오는 채널에 ' +
+      `10층 식단표를 찾지 못했습니다. 이 MM 계정이 ${MENU_CHANNEL_URL} 채널에 ` +
       '가입되어 있는지 확인하거나, MM_MENU_CHANNEL_ID 시크릿으로 채널을 지정하세요.'
     )
   }
@@ -398,7 +466,7 @@ async function checkTodayCovered() {
   await sendAlert(
     `오늘(${today})의 10층 식단 데이터가 없습니다.\n` +
     `이번 주 식단표가 아직 채널에 올라오지 않았거나, 수집에 실패했을 수 있어요.\n` +
-    `채널을 확인해 주세요: https://meeting.ssafy.com`
+    `채널을 확인해 주세요: ${MENU_CHANNEL_URL}`
   )
 }
 
