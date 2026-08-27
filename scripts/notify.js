@@ -118,6 +118,17 @@ async function sendWebhook(payload) {
 
 async function main() {
   const dateStr = getKSTDateStr()
+
+  // 사람이 직접 발송한 날은 NOTIFY_SKIP_DATES에 적어 중복 발송을 막는다
+  const skipDates = (process.env.NOTIFY_SKIP_DATES ?? '')
+    .split(',')
+    .map(d => d.trim())
+    .filter(Boolean)
+  if (skipDates.includes(dateStr)) {
+    console.log(`[${dateStr}] 스킵 날짜로 지정됨 → 알림 건너뜀`)
+    return
+  }
+
   console.log(`[${dateStr}] 식단 알림 발송 시작`)
 
   const [data20f, data10f] = await Promise.all([
