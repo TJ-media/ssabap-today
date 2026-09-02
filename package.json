@@ -4,7 +4,8 @@
   "description": "SSAFY 멀티캠퍼스 점심 식단 Mattermost 알림봇",
   "scripts": {
     "fetch-10f": "node scripts/fetch-10f.js",
-    "notify": "node scripts/notify.js"
+    "notify": "node scripts/notify.js",
+    "test": "node --test test/notify.test.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.0"

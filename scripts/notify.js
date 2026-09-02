@@ -4,6 +4,7 @@ const fs = require('fs')
 const path = require('path')
 
 const BASE = 'https://raw.githubusercontent.com/C4T4767/baptimessafy/main'
+const HOLIDAY_BASE = 'https://holidays.hyunbin.page'
 
 // ── 날짜 ──────────────────────────────────────────────────────────────────
 
@@ -25,6 +26,23 @@ async function fetchJson(url) {
   const res = await fetch(url)
   if (!res.ok) return null
   return res.json()
+}
+
+async function readHolidayNames(dateStr) {
+  const year = dateStr.slice(0, 4)
+  const res = await fetch(`${HOLIDAY_BASE}/${year}.json`)
+  if (!res.ok) throw new Error(`공휴일 정보 조회 실패 (HTTP ${res.status})`)
+
+  const holidays = await res.json()
+  if (!holidays || typeof holidays !== 'object' || Array.isArray(holidays)) {
+    throw new Error('공휴일 정보 조회 실패 (응답 형식 오류)')
+  }
+
+  const names = holidays[dateStr]
+  if (names !== undefined && !Array.isArray(names)) {
+    throw new Error('공휴일 정보 조회 실패 (응답 형식 오류)')
+  }
+  return names ?? null
 }
 
 // 10층은 이 레포의 data-10f에서 직접 읽고, 없으면 baptimessafy로 폴백
@@ -119,6 +137,12 @@ async function sendWebhook(payload) {
 async function main() {
   const dateStr = getKSTDateStr()
   console.log(`[${dateStr}] 식단 알림 발송 시작`)
+
+  const holidayNames = await readHolidayNames(dateStr)
+  if (holidayNames?.length) {
+    console.log(`공휴일(${holidayNames.join(', ')}) → 알림 건너뜀`)
+    return
+  }
 
   const [data20f, data10f] = await Promise.all([
     fetchJson(`${BASE}/data/${dateStr}.json`),
