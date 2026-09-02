@@ -30,19 +30,34 @@ async function fetchJson(url) {
 
 async function readHolidayNames(dateStr) {
   const year = dateStr.slice(0, 4)
-  const res = await fetch(`${HOLIDAY_BASE}/${year}.json`)
+  let res
+  try {
+    res = await fetch(`${HOLIDAY_BASE}/${year}.json`, {
+      signal: AbortSignal.timeout(5000),
+    })
+  } catch (error) {
+    const reason = error.name === 'TimeoutError' ? '시간 초과' : error.message
+    throw new Error(`공휴일 정보 조회 실패 (${reason})`)
+  }
   if (!res.ok) throw new Error(`공휴일 정보 조회 실패 (HTTP ${res.status})`)
 
   const holidays = await res.json()
-  if (!holidays || typeof holidays !== 'object' || Array.isArray(holidays)) {
+  const entries = holidays && typeof holidays === 'object' && !Array.isArray(holidays)
+    ? Object.entries(holidays)
+    : []
+  const isValid = entries.length > 0 && entries.every(([date, names]) => {
+    const parsed = new Date(`${date}T00:00:00Z`)
+    return date.startsWith(`${year}-`) &&
+      !Number.isNaN(parsed.valueOf()) &&
+      parsed.toISOString().slice(0, 10) === date &&
+      Array.isArray(names) &&
+      names.length > 0 &&
+      names.every(name => typeof name === 'string' && name.trim())
+  })
+  if (!isValid) {
     throw new Error('공휴일 정보 조회 실패 (응답 형식 오류)')
   }
-
-  const names = holidays[dateStr]
-  if (names !== undefined && !Array.isArray(names)) {
-    throw new Error('공휴일 정보 조회 실패 (응답 형식 오류)')
-  }
-  return names ?? null
+  return holidays[dateStr] ?? null
 }
 
 // 10층은 이 레포의 data-10f에서 직접 읽고, 없으면 baptimessafy로 폴백
