@@ -6,8 +6,8 @@ const path = require('path')
 
 const MM_SERVER = 'https://meeting.ssafy.com'
 // 10층 식단표가 매주 올라오는 채널 (팀/채널 이름은 채널 URL에서 그대로 따옴)
-// https://meeting.ssafy.com/s15p20a5/channels/town-square
-const MENU_TEAM_NAME = process.env.MM_MENU_TEAM_NAME || 's15p20a5'
+// https://meeting.ssafy.com/s15p30a3/channels/town-square
+const MENU_TEAM_NAME = process.env.MM_MENU_TEAM_NAME || 's15p30a3'
 const MENU_CHANNEL_NAME = process.env.MM_MENU_CHANNEL_NAME || 'town-square'
 const MENU_CHANNEL_URL = `${MM_SERVER}/${MENU_TEAM_NAME}/channels/${MENU_CHANNEL_NAME}`
 // 예전에 식단표가 올라오던 스레드의 루트 포스트 (이름 조회가 안 될 때만 쓰는 폴백)
