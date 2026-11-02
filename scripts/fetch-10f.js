@@ -26,6 +26,26 @@ function getKSTDateStr() {
   return kst.toISOString().slice(0, 10)
 }
 
+// Gemini가 이미지 날짜를 잘못 읽어도 파일명이 틀어지지 않도록,
+// 저장 시에는 항상 "이번 주(KST) 월~금" 날짜를 요일 순서로 부여한다.
+const WEEKDAY_KO = ['월요일', '화요일', '수요일', '목요일', '금요일']
+
+function getThisWeekMonFriKST() {
+  const kst = new Date(Date.now() + 9 * 60 * 60 * 1000)
+  // UTC 요일: 0=일 ... 1=월 ... 6=토. KST 시각의 getUTC*가 KST 달력과 같다.
+  const dow = kst.getUTCDay() // 0=일
+  const daysFromMon = dow === 0 ? -6 : 1 - dow
+  const monday = new Date(Date.UTC(
+    kst.getUTCFullYear(),
+    kst.getUTCMonth(),
+    kst.getUTCDate() + daysFromMon
+  ))
+  return WEEKDAY_KO.map((_, i) => {
+    const d = new Date(monday.getTime() + i * 24 * 60 * 60 * 1000)
+    return d.toISOString().slice(0, 10)
+  })
+}
+
 // 오늘자 식단을 확보하지 못했을 때 관리자 웹훅으로 경고 발송
 async function sendAlert(text) {
   const url = process.env.MM_ALERT_WEBHOOK_URL
@@ -258,16 +278,16 @@ function retryableError(message) {
 const PROMPT = `이 이미지는 멀티캠퍼스 10층 식당의 주간 식단표입니다.
 
 각 요일(월~금)의 식단을 아래 JSON 형식으로 정리해주세요.
-날짜는 이미지에 표시된 숫자 그대로 사용하세요 (예: "5.12").
-연도는 4자리 숫자로 적어주세요 (예: 2026).
+날짜 필드는 참고용이며 저장 시 코드가 이번 주 날짜로 덮어씁니다.
+요일(dayOfWeek)과 메뉴만 정확히 채워주세요.
 
 {
   "year": 2026,
-  "month": 5,
+  "month": 11,
   "days": [
     {
       "dayOfWeek": "월요일",
-      "date": "5.12",
+      "date": "11.2",
       "meals": {
         "도시락": ["메뉴1", "메뉴2"],
         "브런치": ["메뉴1", "메뉴2"],
@@ -351,16 +371,49 @@ async function parseWithGemini(imageBuffer) {
 function saveDailyJsons(parsed) {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true })
 
-  const saved = []
-  for (const day of parsed.days) {
-    const parts = String(day.date).split('.').map(Number)
-    const month = parts.length > 1 ? parts[0] : parsed.month
-    const dayOfMonth = parts.length > 1 ? parts[1] : parts[0]
-    if (!Number.isInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) {
-      console.warn(`날짜 해석 불가, 건너뜀: ${day.dayOfWeek} "${day.date}"`)
+  const weekDates = getThisWeekMonFriKST() // [월..금] YYYY-MM-DD (KST)
+  const weekSet = new Set(weekDates)
+  console.log(`이번 주(KST) 저장 대상: ${weekDates.join(', ')}`)
+
+  // 요일 이름 → 날짜. Gemini 날짜는 신뢰하지 않고 경고만 남긴다.
+  const byWeekday = new Map()
+  for (const day of parsed.days ?? []) {
+    const wd = day.dayOfWeek
+    const idx = WEEKDAY_KO.indexOf(wd)
+    if (idx < 0) {
+      console.warn(`알 수 없는 요일, 건너뜀: "${wd}"`)
       continue
     }
-    const dateStr = `${parsed.year}-${String(month).padStart(2, '0')}-${String(dayOfMonth).padStart(2, '0')}`
+    if (byWeekday.has(wd)) {
+      console.warn(`요일 중복(${wd}), 마지막 항목 사용`)
+    }
+
+    // Gemini가 준 날짜가 이번 주 밖이면 경고 (저장에는 쓰지 않음)
+    const parts = String(day.date ?? '').split('.').map(Number)
+    const month = parts.length > 1 ? parts[0] : parsed.month
+    const dayOfMonth = parts.length > 1 ? parts[1] : parts[0]
+    if (Number.isInteger(dayOfMonth) && dayOfMonth >= 1 && dayOfMonth <= 31 && Number.isInteger(month)) {
+      const geminiDate = `${parsed.year}-${String(month).padStart(2, '0')}-${String(dayOfMonth).padStart(2, '0')}`
+      if (!weekSet.has(geminiDate)) {
+        console.warn(
+          `Gemini 날짜가 이번 주 밖임 → 무시: ${wd} "${day.date}" → ${geminiDate} ` +
+          `(대신 ${weekDates[idx]} 사용)`
+        )
+      }
+    }
+
+    byWeekday.set(wd, day)
+  }
+
+  const saved = []
+  for (let i = 0; i < WEEKDAY_KO.length; i++) {
+    const wd = WEEKDAY_KO[i]
+    const day = byWeekday.get(wd)
+    if (!day) {
+      console.warn(`파싱 결과에 ${wd} 없음, 건너뜀`)
+      continue
+    }
+    const dateStr = weekDates[i]
 
     const meals = Object.entries(day.meals ?? {})
       .map(([courseName, items]) => ({
@@ -377,7 +430,7 @@ function saveDailyJsons(parsed) {
 
     const output = {
       date: dateStr,
-      dayOfWeek: day.dayOfWeek,
+      dayOfWeek: wd,
       restaurant: '멀티캠퍼스 10층',
       mealTime: '점심',
       meals,
